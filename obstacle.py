@@ -7,9 +7,8 @@ class Obstacle():
         self.velocity = velocity
         self.size = size
         self.color = color
-        self.passed = False
         self.is_bottom = is_bottom
-        self.id = id(self)
+        self.is_passed = False
 
         self.rect = pygame.Rect(position, size)
 
