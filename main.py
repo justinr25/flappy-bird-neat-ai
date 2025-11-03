@@ -262,7 +262,7 @@ class Simulation:
                     obstacle.is_passed = True
 
                     # increase player fitnesses
-                    self.ge[player_idx].fitness += 5
+                    self.ge[player_idx].fitness += 10
 
             # increment next obstacle idx and increment score
             if obstacle.is_passed:
