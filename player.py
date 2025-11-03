@@ -9,7 +9,6 @@ class Player():
         self.size = size
         self.color = color
         self.isJumpButtonReleased = True
-        self.passed_obstacles = set()
 
         self.rect = pygame.Rect((0, 0), size)
         self.rect.center = position
