@@ -1,13 +1,15 @@
 import pygame
 
 class Obstacle():
-    def __init__(self, game, position, velocity, size, color):
+    def __init__(self, game, position, velocity, size, color, is_bottom):
         self.game = game
         self.position = position
         self.velocity = velocity
         self.size = size
         self.color = color
         self.passed = False
+        self.is_bottom = is_bottom
+        self.id = id(self)
 
         self.rect = pygame.Rect(position, size)
 
@@ -19,6 +21,9 @@ class Obstacle():
         self.draw(surf)
 
         # update kinematics values
-        self.rect.move_ip(self.velocity * self.game.delta_time)
-        # self.position += self.velocity
-        # self.rect.bottomleft = self.position
+        # self.rect.move_ip(self.velocity * self.game.delta_time)
+        self.position += self.velocity
+        if self.is_bottom:
+            self.rect.topleft = self.position
+        else:
+            self.rect.bottomleft = self.position
