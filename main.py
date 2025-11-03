@@ -29,6 +29,7 @@ class Simulation:
         self.screen_bg_color = (255, 255, 255)
         self.is_simulation_started = False
         self.score = 0
+        self.generation_num = 0
 
         # load NEAT-Python configuration file
         local_dir = os.path.dirname(__file__)
@@ -57,7 +58,7 @@ class Simulation:
                 velocity = pygame.math.Vector2(0, 0),
                 acceleration = pygame.math.Vector2(0, 0.55),
                 size = (50, 50),
-                color = (0, 0, 0)
+                color = (random.randint(0,255), random.randint(0,255), random.randint(0,255))
             )
             self.players.append(player)
             g.fitness = 0
@@ -115,7 +116,7 @@ class Simulation:
         return is_out_of_bounds or is_colliding_with_obstacle
 
     def spawn_obstacle_pair(self):
-        gap = 250
+        gap = 180
         center_y = random.uniform(self.screen.get_height() / 2 - 250, self.screen.get_height() / 2 + 250)
         top_obstacle = self.create_obstacle(center_y - gap / 2, False)
         bottom_obstacle = self.create_obstacle(center_y + gap / 2, True)
@@ -149,6 +150,15 @@ class Simulation:
             position = (self.screen.get_width() / 2, self.screen.get_height() / 2),
             color = (230, 230, 230)
         )
+    
+    def display_generation_num(self):
+        display_text(
+            surf = self.screen,
+            text = f'Generation: {self.generation_num}',
+            size = 50,
+            position = (130, 30),
+            color = (0, 0, 0)
+        )
 
     # fitness function
     def eval_genomes(self, genomes, config): 
@@ -156,7 +166,11 @@ class Simulation:
         for _, genome in genomes:
             genome.fitness = 0
         
+        # setup simulation
         self.simulation_setup(genomes)
+
+        # increment generation number
+        self.generation_num += 1
 
         # game loop
         while True:
@@ -186,6 +200,9 @@ class Simulation:
             # display score
             self.display_score()
 
+            # display generation number
+            self.display_generation_num()
+
             # update players
             for player_idx, player in enumerate(self.players):
                 # update player
@@ -193,16 +210,14 @@ class Simulation:
                 self.ge[player_idx].fitness += 0.03
 
                 # feed nn inputs (player y pos, dist from top, dist from bottom)
-                if self.top_obstacles and self.bottom_obstacles:
-                    top_obstacle = self.top_obstacles[self.next_obstacle_idx]
-                    bottom_obstacle = self.bottom_obstacles[self.next_obstacle_idx]
-                    
-                    top_obstacle_ydist = abs(player.rect.centery - top_obstacle.rect.bottom)
-                    bottom_obstacle_ydist = abs(player.rect.centery - bottom_obstacle.rect.top)
-                    horizontal_dist = abs(player.rect.left - top_obstacle.rect.right)
-                    output = self.nets[player_idx].activate((player.rect.centery, horizontal_dist, top_obstacle_ydist, bottom_obstacle_ydist))
-                    if output[0] > 0.5:
-                        player.jump()
+                top_obstacle = self.top_obstacles[self.next_obstacle_idx]
+                bottom_obstacle = self.bottom_obstacles[self.next_obstacle_idx]
+                top_obstacle_ydist = abs(player.rect.centery - top_obstacle.rect.bottom)
+                bottom_obstacle_ydist = abs(player.rect.centery - bottom_obstacle.rect.top)
+                horizontal_dist = abs(player.rect.left - top_obstacle.rect.right)
+                output = self.nets[player_idx].activate((player.rect.centery, horizontal_dist, top_obstacle_ydist, bottom_obstacle_ydist))
+                if output[0] > 0.5:
+                    player.jump()
 
             # update obstacles
             for top_obstacle, bottom_obstacle in zip(self.top_obstacles, self.bottom_obstacles):
@@ -225,20 +240,17 @@ class Simulation:
                     break
 
             # handle player scoring
-            for obstacle in self.top_obstacles:
-                for player_idx, player in enumerate(self.players):
-                    if obstacle.id not in player.passed_obstacles and player.rect.left >= obstacle.rect.right - 15:
-                        # flag obstacle as passed
-                        obstacle.passed = True
+            obstacle = self.top_obstacles[self.next_obstacle_idx]
+            for player_idx, player in enumerate(self.players):
+                if not obstacle.is_passed and player.rect.left >= obstacle.rect.right:
+                    # add obstacle to players passed obstacle set
+                    obstacle.is_passed = True
 
-                        # add obstacle to players passed obstacle set
-                        player.passed_obstacles.add(obstacle.id)
-
-                        # increase player fitnesses
-                        self.ge[player_idx].fitness += 5
+                    # increase player fitnesses
+                    self.ge[player_idx].fitness += 5
 
             # increment next obstacle idx and increment score
-            if self.top_obstacles[self.next_obstacle_idx].passed:
+            if obstacle.is_passed:
                 self.next_obstacle_idx += 1
                 self.score += 1
 
@@ -246,7 +258,7 @@ class Simulation:
             self.clock.tick(self.max_fps)
 
     def run_simulation(self):
-        winner = self.population.run(self.eval_genomes, 50)
+        winner = self.population.run(self.eval_genomes, 20)
 
         # show final stats
         print('\nBest genome:\n{!s}'.format(winner))
