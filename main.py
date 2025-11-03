@@ -2,15 +2,19 @@ import sys
 import time
 import random
 import json
+import os
+import math
 
 import pygame
+import neat
 
-from utils import display_text
 from player import Player
 from obstacle import Obstacle
 from reset_button import ResetButton
+from utils import display_text
+from utils import calculate_distance
 
-class Game:
+class Simulation:
     def __init__(self):
         # setup pygame
         pygame.init()
@@ -23,23 +27,31 @@ class Game:
         self.clock = pygame.time.Clock()
         self.last_time = time.perf_counter()
         self.screen_bg_color = (255, 255, 255)
-        self.is_game_played = False
-        self.is_game_active = False
-        self.high_score = 0
-        with open('high_score.json', 'r') as high_score_file:
-            high_score_obj = json.load(high_score_file)
-            self.high_score = high_score_obj['high_score']
-        self.reset_high_score_btn = ResetButton(
-            game = self,
-            text = 'Reset High Score',
-            size = 30,
-            position = (100, self.screen.get_height() - 30),
-            text_color = (0, 0, 0)
-        )
+        self.is_simulation_started = False
+        self.score = 0
 
-    def game_setup(self):
-        # setup player
-        self.player = Player(
+        # load NEAT-Python configuration file
+        local_dir = os.path.dirname(__file__)
+        config_path = os.path.join(local_dir, 'config-feedforward.txt')
+
+        # NEAT setup
+        self.config = neat.Config(neat.DefaultGenome, neat.DefaultReproduction,
+                            neat.DefaultSpeciesSet, neat.DefaultStagnation,
+                            config_path)
+        self.population = neat.Population(self.config)
+        self.population.add_reporter(neat.StdOutReporter(True))
+        self.population.add_reporter(neat.StatisticsReporter())
+
+    def simulation_setup(self, genomes):
+        # NEAT settup
+        self.nets = [] # neural network of each player
+        self.ge = [] # genome of each player
+        self.players = [] # players
+
+        for _, g in genomes: # (genome id, genome object)
+            net = neat.nn.FeedForwardNetwork.create(g, self.config)
+            self.nets.append(net)
+            player = Player(
                 game = self,
                 position = pygame.math.Vector2(self.screen.get_width() * 0.3, self.screen.get_height() * 0.5),
                 velocity = pygame.math.Vector2(0, 0),
@@ -47,18 +59,22 @@ class Game:
                 size = (50, 50),
                 color = (0, 0, 0)
             )
+            self.players.append(player)
+            g.fitness = 0
+            self.ge.append(g)
 
         # setup obstacles
         self.top_obstacles = []
         self.bottom_obstacles = []
+        self.spawn_obstacle_pair()
+        self.next_obstacle_idx = 0
 
         # setup timer
         self.spawn_obstacle = pygame.USEREVENT + 1
         pygame.time.set_timer(self.spawn_obstacle, 2000)
         
         # reset game state
-        self.is_game_active = True
-        self.is_game_played = True
+        self.is_simulation_started = True
 
         # reset score
         self.score = 0
@@ -66,56 +82,47 @@ class Game:
         # disable display resizing
         self.screen = pygame.display.set_mode(self.screen_size)
 
-    def save_high_score(self):
-        # update high score
-        if self.score > self.high_score:
-            self.high_score = self.score
+    def handle_game_over(self, player_idx):
+        # decrease player fitness
+        self.ge[player_idx].fitness -= 1
 
-        # save high score to json file
-        high_score_obj = {'high_score': self.high_score}
-        with open('high_score.json', 'w') as high_score_file:
-            json.dump(high_score_obj, high_score_file)
+        # remove player
+        self.players.pop(player_idx)
+        self.nets.pop(player_idx)
+        self.ge.pop(player_idx)
 
-    def handle_game_over(self):
-        # enable display resizing
-        self.screen = pygame.display.set_mode(self.screen_size, pygame.RESIZABLE)
-
-        # save high score to json file
-        self.save_high_score()
-
-    def create_obstacle(self, position_y):
+    def create_obstacle(self, position_y, is_bottom):
         return Obstacle(
-                game = self,
-                position = pygame.math.Vector2(self.screen.get_width(), position_y),
-                velocity = pygame.math.Vector2(-3, 0),
-                size = (80, 1000),
-                color = (0, 0, 0)
-            )
-
-    def remove_obstacles(self):
-        self.top_obstacles = [top_obstacle for top_obstacle in self.top_obstacles if top_obstacle.rect.right > 0]
-        self.bottom_obstacles = [bottom_obstacle for bottom_obstacle in self.bottom_obstacles if bottom_obstacle.rect.right > 0]
-
-    def is_player_colliding(self):
-        is_out_of_bounds = self.player.rect.top < 0 or self.player.rect.bottom > self.screen.get_height()
-        is_colliding_with_obstacle = self.player.rect.collidelist(self.top_obstacles) > -1 or self.player.rect.collidelist(self.bottom_obstacles) > -1
-        return is_out_of_bounds or is_colliding_with_obstacle
-
-    def update_score(self):
-        for obstacle in self.top_obstacles:
-            if self.player.rect.centerx >= obstacle.rect.centerx and not obstacle.passed:
-                self.score += 1
-                obstacle.passed = True
-
-    def display_score(self):
-        display_text(
-            surf = self.screen,
-            text = f'{self.score}',
-            size = 600,
-            position = (self.screen.get_width() / 2, self.screen.get_height() / 2),
-            color = (230, 230, 230)
+            game = self,
+            position = pygame.math.Vector2(self.screen.get_width(), position_y),
+            velocity = pygame.math.Vector2(-3, 0),
+            size = (80, 1000),
+            color = (0, 0, 0),
+            is_bottom = is_bottom
         )
 
+    def remove_obstacles(self):
+        old_size = len(self.top_obstacles)
+        self.top_obstacles = [top_obstacle for top_obstacle in self.top_obstacles if top_obstacle.rect.right > 0]
+        self.bottom_obstacles = [bottom_obstacle for bottom_obstacle in self.bottom_obstacles if bottom_obstacle.rect.right > 0]
+        removed_count = old_size - len(self.top_obstacles)
+        if removed_count > 0:
+            self.next_obstacle_idx -= max(0, self.next_obstacle_idx - removed_count)
+
+    def is_player_colliding(self, player):
+        is_out_of_bounds = player.rect.top < 0 or player.rect.bottom > self.screen.get_height()
+        is_colliding_with_obstacle = player.rect.collidelist(self.top_obstacles) > -1 or player.rect.collidelist(self.bottom_obstacles) > -1
+        return is_out_of_bounds or is_colliding_with_obstacle
+
+    def spawn_obstacle_pair(self):
+        gap = 250
+        center_y = random.uniform(self.screen.get_height() / 2 - 250, self.screen.get_height() / 2 + 250)
+        top_obstacle = self.create_obstacle(center_y - gap / 2, False)
+        bottom_obstacle = self.create_obstacle(center_y + gap / 2, True)
+
+        self.top_obstacles.append(top_obstacle)
+        self.bottom_obstacles.append(bottom_obstacle)
+        
     def display_title_text(self):
         display_text(
             surf = self.screen,
@@ -125,55 +132,32 @@ class Game:
             color = (0, 0, 0),
         )
 
-    def display_play_game_text(self):
+    def display_start_simulation_text(self):
         display_text(
             surf = self.screen,
-            text = 'Click or press space to play',
+            text = 'Click or press space to start simulation',
             size = 40,
             position = (self.screen.get_width() / 2, self.screen.get_height() / 2 + 200), 
             color = (200, 200, 200),
         )
-
-    def display_game_over_text(self):
+            
+    def display_score(self):
         display_text(
             surf = self.screen,
-            text = 'GAME OVER',
-            size = 200,
+            text = f'{self.score}',
+            size = 600,
             position = (self.screen.get_width() / 2, self.screen.get_height() / 2),
-            color = (0, 0, 0)
+            color = (230, 230, 230)
         )
 
-    def display_game_over_score_text(self):
-        display_text(
-            surf = self.screen,
-            text = f'Score: {self.score}',
-            size = 60,
-            position = (self.screen.get_width() / 2, self.screen.get_height() / 2 + 120),
-            color = (0, 0, 0)
-        )
+    # fitness function
+    def eval_genomes(self, genomes, config): 
+        # initialize genome fitnesses
+        for _, genome in genomes:
+            genome.fitness = 0
+        
+        self.simulation_setup(genomes)
 
-    def display_game_over_high_score_text(self):
-        display_text(
-            surf = self.screen,
-            text = f'High Score: {self.high_score}',
-            size = 60,
-            position = (self.screen.get_width() / 2, self.screen.get_height() / 2 + 180),
-            color = (0, 0, 0)
-        )
-
-    def display_play_again_text(self):
-        display_text(
-            surf = self.screen,
-            text = 'Click or press space to play again',
-            size = 40,
-            position = (self.screen.get_width() / 2, self.screen.get_height() - 70),
-            color = (200, 200, 200)
-        )
-
-    def display_reset_high_score_btn(self):
-       self.reset_high_score_btn.update()
-
-    def run(self):
         # game loop
         while True:
             # update delta time
@@ -188,84 +172,86 @@ class Game:
                     pygame.quit()
                     sys.exit()
                 
-                if self.is_game_active:
-                    # handle obstacle spawning
-                    if event.type == self.spawn_obstacle:
-                        gap = 160
-                        center_y = random.uniform(self.screen.get_height() / 2 - 250, self.screen.get_height() / 2 + 250)
-                        top_obstacle = self.create_obstacle(center_y - gap / 2 - 1000)
-                        bottom_obstacle = self.create_obstacle(center_y + gap / 2)
-
-                        self.top_obstacles.append(top_obstacle)
-                        self.bottom_obstacles.append(bottom_obstacle)
-                else:
-                    # handle resizing
-                    if event.type == pygame.VIDEORESIZE:
-                        if not self.is_fullscreen:
-                            self.screen = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
-                    
-                    # handle toggling fullscreen with f
-                    if event.type == pygame.KEYDOWN and event.key == pygame.K_f:
-                        self.is_fullscreen = not self.is_fullscreen
-                        if self.is_fullscreen:
-                            self.screen = pygame.display.set_mode(self.monitor_size, pygame.FULLSCREEN)
-                        else:
-                            self.screen = pygame.display.set_mode((self.screen.get_width(), self.screen.get_height()), pygame.RESIZABLE)
-
-                    # handle resetting display size with r
-                    if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                        self.screen = pygame.display.set_mode(self.screen_size, pygame.RESIZABLE)
-
-                    # * DEBUG: toggle framerate with e
-                    if event.type == pygame.KEYDOWN and event.key == pygame.K_e:
-                        if self.max_fps == 60:
-                            self.max_fps = 20
-                        else:
-                            self.max_fps = 60
-
-                    # handle starting game
-                    is_space_pressed = event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE
-                    is_mouse_clicked = event.type == pygame.MOUSEBUTTONDOWN
-                    if not self.reset_high_score_btn.is_clicked() and (is_space_pressed or is_mouse_clicked):
-                        self.game_setup()
+                # handle obstacle spawning
+                if event.type == self.spawn_obstacle:
+                    self.spawn_obstacle_pair()
 
             # clear screen
             self.screen.fill(self.screen_bg_color)
 
-            if self.is_game_active:
-                # update and display score
-                self.update_score()
-                self.display_score()
+            # stop running if all players are dead
+            if not self.players:
+                break
 
+            # display score
+            self.display_score()
+
+            # update players
+            for player_idx, player in enumerate(self.players):
                 # update player
-                self.player.update(self.screen)
+                player.update(self.screen)
+                self.ge[player_idx].fitness += 0.03
 
-                # update obstacles
-                for top_obstacle, bottom_obstacle in zip(self.top_obstacles, self.bottom_obstacles):
-                    top_obstacle.update(self.screen)
-                    bottom_obstacle.update(self.screen)
-                self.remove_obstacles()
-                
-                # check if player is colliding
-                self.is_game_active = not self.is_player_colliding()
-                if not self.is_game_active:
-                    self.handle_game_over()
-            else:
-                if not self.is_game_played:
-                    self.display_title_text()
-                    self.display_play_game_text()
-                else:
-                    self.screen.fill(self.screen_bg_color)
+                # feed nn inputs (player y pos, dist from top, dist from bottom)
+                if self.top_obstacles and self.bottom_obstacles:
+                    top_obstacle = self.top_obstacles[self.next_obstacle_idx]
+                    bottom_obstacle = self.bottom_obstacles[self.next_obstacle_idx]
+                    
+                    top_obstacle_ydist = abs(player.rect.centery - top_obstacle.rect.bottom)
+                    bottom_obstacle_ydist = abs(player.rect.centery - bottom_obstacle.rect.top)
+                    horizontal_dist = abs(player.rect.left - top_obstacle.rect.right)
+                    output = self.nets[player_idx].activate((player.rect.centery, horizontal_dist, top_obstacle_ydist, bottom_obstacle_ydist))
+                    if output[0] > 0.5:
+                        player.jump()
 
-                    self.display_game_over_text()
-                    self.display_game_over_score_text()
-                    self.display_game_over_high_score_text()
-                    self.display_play_again_text()
-                    self.display_reset_high_score_btn()
+            # update obstacles
+            for top_obstacle, bottom_obstacle in zip(self.top_obstacles, self.bottom_obstacles):
+                top_obstacle.update(self.screen)
+                bottom_obstacle.update(self.screen)
+            self.remove_obstacles()
+
+            # check if player is colliding
+            for player_idx in range(len(self.players)-1, -1, -1):
+                player = self.players[player_idx]
+                if self.is_player_colliding(player):
+                    self.handle_game_over(player_idx)
+
+            # end game if fitness threshold is surpassed
+            fitnesses = [self.ge[i].fitness for i in range(len(self.players))]
+            if fitnesses:
+                max_fitness = max(fitnesses)
+                print(f'{max_fitness:.2f}, {self.next_obstacle_idx}')
+                if max_fitness >= config.fitness_threshold:
+                    break
+
+            # handle player scoring
+            for obstacle in self.top_obstacles:
+                for player_idx, player in enumerate(self.players):
+                    if obstacle.id not in player.passed_obstacles and player.rect.left >= obstacle.rect.right - 15:
+                        # flag obstacle as passed
+                        obstacle.passed = True
+
+                        # add obstacle to players passed obstacle set
+                        player.passed_obstacles.add(obstacle.id)
+
+                        # increase player fitnesses
+                        self.ge[player_idx].fitness += 5
+
+            # increment next obstacle idx and increment score
+            if self.top_obstacles[self.next_obstacle_idx].passed:
+                self.next_obstacle_idx += 1
+                self.score += 1
 
             pygame.display.update()
             self.clock.tick(self.max_fps)
 
+    def run_simulation(self):
+        winner = self.population.run(self.eval_genomes, 50)
+
+        # show final stats
+        print('\nBest genome:\n{!s}'.format(winner))
+
+
 if __name__ == '__main__':
-    game = Game()
-    game.run()
+    simulation = Simulation()
+    simulation.run_simulation()
