@@ -8,6 +8,7 @@ import math
 import pygame
 import neat
 
+import visualize
 from player import Player
 from obstacle import Obstacle
 from reset_button import ResetButton
@@ -41,7 +42,8 @@ class Simulation:
                             config_path)
         self.population = neat.Population(self.config)
         self.population.add_reporter(neat.StdOutReporter(True))
-        self.population.add_reporter(neat.StatisticsReporter())
+        self.stats = neat.StatisticsReporter()
+        self.population.add_reporter(self.stats)
 
     def simulation_setup(self, genomes):
         # NEAT settup
@@ -160,6 +162,15 @@ class Simulation:
             color = (0, 0, 0)
         )
 
+    def display_num_alive(self):
+        display_text(
+            surf = self.screen,
+            text = f'Alive: {len(self.players)}',
+            size = 50,
+            position = (85, 70),
+            color = (0, 0, 0)
+        )
+
     # fitness function
     def eval_genomes(self, genomes, config): 
         # initialize genome fitnesses
@@ -200,14 +211,11 @@ class Simulation:
             # display score
             self.display_score()
 
-            # display generation number
-            self.display_generation_num()
-
             # update players
             for player_idx, player in enumerate(self.players):
                 # update player
                 player.update(self.screen)
-                self.ge[player_idx].fitness += 0.03
+                self.ge[player_idx].fitness += 0.01
 
                 # feed nn inputs (player y pos, dist from top, dist from bottom)
                 top_obstacle = self.top_obstacles[self.next_obstacle_idx]
@@ -225,19 +233,26 @@ class Simulation:
                 bottom_obstacle.update(self.screen)
             self.remove_obstacles()
 
+            # display generation number and alive count
+            self.display_generation_num()
+            self.display_num_alive()
+
             # check if player is colliding
             for player_idx in range(len(self.players)-1, -1, -1):
                 player = self.players[player_idx]
                 if self.is_player_colliding(player):
                     self.handle_game_over(player_idx)
 
-            # end game if fitness threshold is surpassed
-            fitnesses = [self.ge[i].fitness for i in range(len(self.players))]
-            if fitnesses:
-                max_fitness = max(fitnesses)
-                print(f'{max_fitness:.2f}, {self.next_obstacle_idx}')
-                if max_fitness >= config.fitness_threshold:
-                    break
+            # end simulation if fitness threshold is surpassed
+            # fitnesses = [self.ge[i].fitness for i in range(len(self.players))]
+            # if fitnesses:
+            #     max_fitness = max(fitnesses)
+            #     print(f'{max_fitness:.2f}, {self.next_obstacle_idx}')
+            #     if max_fitness >= config.fitness_threshold:
+            #         break
+            # end simulation if score > 15
+            if self.score > 15:
+                break
 
             # handle player scoring
             obstacle = self.top_obstacles[self.next_obstacle_idx]
@@ -262,6 +277,11 @@ class Simulation:
 
         # show final stats
         print('\nBest genome:\n{!s}'.format(winner))
+
+        # visualize the results
+        visualize.plot_stats(self.stats, ylog=False, view=True)
+        visualize.plot_species(self.stats, view=True)
+        visualize.draw_net(self.config, winner, view=True)
 
 
 if __name__ == '__main__':
