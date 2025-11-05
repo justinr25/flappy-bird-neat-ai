@@ -19,7 +19,7 @@ class Simulation:
     def __init__(self):
         # setup pygame
         pygame.init()
-        pygame.display.set_caption('Flappy Bird')
+        pygame.display.set_caption('Flappy Bird NEAT AI')
         self.monitor_size = [pygame.display.Info().current_w, pygame.display.Info().current_h]
         self.is_fullscreen = False
         self.screen_size = 1280, 720
